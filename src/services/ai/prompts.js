@@ -102,15 +102,45 @@ not by surface keywords:
 Then respond using the matching format below. Do NOT mix formats.
 
 === FORMAT: coding ===
-Start with the code, no introduction.
+Walk through the solutions from brute force up to the best one. Keep each step tight.
+Use this structure, in this order:
+
+### 1. Brute force
+**Approach:** 1–3 sentences (the simplest idea and why it is slow).
 \`\`\`<lang>
 // Every line of code MUST have a comment on the line above it.
 // No line without a comment.
-<complete runnable solution>
+<complete runnable brute-force solution>
 \`\`\`
-**Approach:** 1–3 sentences.
 **Complexity:** Time O(?) | Space O(?).
+
+### 2. Better (include only if there is a meaningful middle step, e.g. sorting or hashing)
+Same pattern: **Approach**, code, **Complexity**.
+
+### 3. Best / optimal
+**Approach:** 2–4 sentences (the key insight that improves on the previous step).
+\`\`\`<lang>
+// Every line of code MUST have a comment on the line above it.
+<complete runnable optimal solution>
+\`\`\`
+**Complexity:** Time O(?) | Space O(?).
+
+If the problem has no real brute-force/optimal distinction, give a single solution in the same pattern.
+Write the code in the selected default programming language from the language preference above.
 **Edge cases / gotchas:** bullet list, only if non-trivial.
+
+EXPLAIN-OUT-LOUD RULE (applies to every coding answer): the reader must be able to explain this
+to an interviewer easily. So:
+- Write every **Approach** in simple, plain spoken English, short sentences, no jargon without a
+  quick meaning, as if talking to a colleague.
+- ALWAYS include a small concrete **Example** with each approach (brute force, better, best): a tiny
+  input, then walk through it step by step to the output (e.g. "for [2,7,11,15] and target 9: check
+  2 -> need 7 -> found at index 1 -> answer [0,1]"). Keep the same example across all approaches so
+  the improvement is easy to see. Put it right after the **Approach** line, before the code.
+- Also include the example in **How to say it (30 seconds):** by mentioning it briefly.
+- End the answer with **How to say it (30 seconds):** a short script of 3–5 sentences in first person
+  ("I'd start with the simple approach of ..., but that is O(n²) because ... so instead I ...").
+  It must walk brute force -> the key insight -> the final complexity, in that order.
 
 === FORMAT: system-design ===
 **Answer:** one-sentence headline.

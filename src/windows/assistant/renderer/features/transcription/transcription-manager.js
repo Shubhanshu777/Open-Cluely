@@ -370,6 +370,34 @@ export function createTranscriptionManager({
         showFeedback('Mic off', 'info');
     }
 
+    // Finds an audio input whose label looks like a virtual loopback driver and opens it.
+    async function getVirtualLoopbackAudioStream() {
+        // Labels are only populated after microphone permission has been granted.
+        const permissionProbeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        permissionProbeStream.getTracks().forEach((track) => track.stop());
+
+        const allDevices = await navigator.mediaDevices.enumerateDevices();
+        const loopbackDevice = allDevices.find(
+            (device) => device.kind === 'audioinput' && /blackhole|loopback|soundflower|vb-cable/i.test(device.label)
+        );
+
+        if (!loopbackDevice) {
+            throw new Error(
+                'Host audio is not supported on macOS directly. Install BlackHole 2ch, set a Multi-Output Device (speakers + BlackHole) as system output, then try again.'
+            );
+        }
+
+        addMonitorLog('info', 'loopback-device', `Using loopback input: ${loopbackDevice.label}`, 'system');
+        return navigator.mediaDevices.getUserMedia({
+            audio: {
+                deviceId: { exact: loopbackDevice.deviceId },
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false
+            }
+        });
+    }
+
     async function startSystemAudioRecording() {
         if (isSystemActive || sourceStatuses.system === 'connecting') return;
         setSourceStatus('system', 'connecting', 'Connecting to host audio...');
@@ -385,14 +413,76 @@ export function createTranscriptionManager({
             const result = await window.electronAPI.startVoiceRecognition('system');
             if (result && result.error) throw new Error(result.error);
 
+            let usedDisplayMediaLoopback = false;
+            const isMacOs = /mac/i.test(navigator.platform || navigator.userAgent || '');
             systemMediaStream = await getSystemAudioStream(sourceId);
+
+            // macOS: the desktop-capture path (Windows-style) hands back a "System Audio" track
+            // that is silent, so a non-empty track list is not proof of sound. On macOS always
+            // drop it and use BlackHole (or display-media loopback) instead.
+            if (isMacOs || systemMediaStream.getAudioTracks().length === 0) {
+                systemMediaStream.getTracks().forEach((track) => track.stop());
+
+                // Preferred: system audio loopback via getDisplayMedia (macOS ScreenCaptureKit,
+                // answered by setDisplayMediaRequestHandler in the main process). This needs no
+                // virtual audio driver and does not change the Mac's audio output, so meetings
+                // keep working normally. Requires macOS 13+ and Screen Recording permission.
+                try {
+                    systemMediaStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+                    if (systemMediaStream.getAudioTracks().length === 0) {
+                        systemMediaStream.getTracks().forEach((track) => track.stop());
+                        throw new Error('Screen capture returned no audio track');
+                    }
+                    usedDisplayMediaLoopback = true;
+                    addMonitorLog('info', 'display-media-loopback', 'Using system audio loopback via getDisplayMedia', 'system');
+                } catch (displayMediaError) {
+                    addMonitorLog('info', 'display-media-failed', `getDisplayMedia loopback failed: ${displayMediaError.message}`, 'system');
+                    systemMediaStream = null;
+                }
+
+                // Backup: a virtual loopback input (BlackHole etc.) if it is installed.
+                if (!systemMediaStream) {
+                    try {
+                        systemMediaStream = await getVirtualLoopbackAudioStream();
+                        addMonitorLog('info', 'loopback-device-active', 'Using BlackHole/virtual loopback input for host audio', 'system');
+                    } catch (loopbackError) {
+                        addMonitorLog('info', 'loopback-device-missing', loopbackError.message, 'system');
+                        systemMediaStream = null;
+                    }
+                }
+            }
+
+            if (!systemMediaStream || systemMediaStream.getAudioTracks().length === 0) {
+                systemMediaStream?.getTracks().forEach((track) => track.stop());
+                addMonitorLog('info', 'loopback-fallback', 'No desktop audio track; looking for a virtual loopback device (BlackHole)', 'system');
+                systemMediaStream = await getVirtualLoopbackAudioStream();
+            }
 
             const videoTrack = systemMediaStream.getVideoTracks()[0];
             if (videoTrack && isLikelyCameraTrack(videoTrack.label)) {
                 throw new Error(`Desktop capture fell back to camera source (${videoTrack.label || 'unknown'}).`);
             }
 
-            systemMediaStream.getVideoTracks().forEach((track) => track.stop());
+            // For getDisplayMedia loopback the audio shares a capture session with the video,
+            // so stopping the video track can silence the audio. Keep it alive but disabled.
+            // Desktop-capture streams (Windows) keep the original behaviour of stopping video.
+            const isDisplayMediaLoopbackStream = systemMediaStream.getAudioTracks().some(
+                (track) => /loopback|system|display/i.test(track.label || '')
+            ) || usedDisplayMediaLoopback;
+            systemMediaStream.getVideoTracks().forEach((track) => {
+                if (isDisplayMediaLoopbackStream) {
+                    track.enabled = false;                } else {
+                    track.stop();
+                }
+            });
+
+            const hostAudioTrack = systemMediaStream.getAudioTracks()[0];
+            addMonitorLog(
+                'info',
+                'host-track-info',
+                `Host audio track: label="${hostAudioTrack?.label}" state=${hostAudioTrack?.readyState} muted=${hostAudioTrack?.muted}`,
+                'system'
+            );
 
             systemAudioContext = new AudioContext();
             await systemAudioContext.resume();
@@ -402,6 +492,7 @@ export function createTranscriptionManager({
             setSystemActive(true);
             addChatMessage('system', 'Listening to host audio...');
             showFeedback('System audio on', 'success');
+            startHostAudioLevelCheck(systemAudioContext, systemMediaStream);
             addMonitorLog('info', 'source-active', 'Host source active', 'system');
         } catch (error) {
             console.error('Failed to start system audio:', error);
@@ -422,7 +513,68 @@ export function createTranscriptionManager({
         updateTranscriptionUI();
     }
 
+    // Diagnostic: every few seconds report whether any sound is actually reaching the host source,
+    // so "Listening to host audio..." with no transcript can be told apart from "no audio at all".
+    let hostAudioLevelIntervalHandle = null;
+
+    let hostAudioSamplingIntervalHandle = null;
+
+    function stopHostAudioLevelCheck() {
+        if (hostAudioSamplingIntervalHandle) {
+            clearInterval(hostAudioSamplingIntervalHandle);
+            hostAudioSamplingIntervalHandle = null;
+        }
+        if (hostAudioLevelIntervalHandle) {
+            clearInterval(hostAudioLevelIntervalHandle);
+            hostAudioLevelIntervalHandle = null;
+        }
+    }
+
+    function startHostAudioLevelCheck(audioContext, mediaStream) {
+        stopHostAudioLevelCheck();
+        const analyserNode = audioContext.createAnalyser();
+        analyserNode.fftSize = 1024;
+        audioContext.createMediaStreamSource(mediaStream).connect(analyserNode);
+        // Route the analyser to the destination through a muted gain so the browser keeps
+        // processing it (an unconnected analyser can report silence), without playing anything.
+        const mutedAnalyserOutput = audioContext.createGain();
+        mutedAnalyserOutput.gain.value = 0;
+        analyserNode.connect(mutedAnalyserOutput);
+        mutedAnalyserOutput.connect(audioContext.destination);
+        const sampleBuffer = new Float32Array(analyserNode.fftSize);
+        let peakSinceLastCheck = 0;
+        let silentChecksInARow = 0;
+
+        hostAudioSamplingIntervalHandle = setInterval(() => {
+            analyserNode.getFloatTimeDomainData(sampleBuffer);
+            for (let index = 0; index < sampleBuffer.length; index += 1) {
+                peakSinceLastCheck = Math.max(peakSinceLastCheck, Math.abs(sampleBuffer[index]));
+            }
+        }, 100);
+
+        hostAudioLevelIntervalHandle = setInterval(() => {
+            if (!isSystemActive) {
+                stopHostAudioLevelCheck();
+                return;
+            }
+            const peak = peakSinceLastCheck;
+            peakSinceLastCheck = 0;
+            addMonitorLog('info', 'host-audio-level', `Host audio peak level: ${peak.toFixed(4)}`, 'system');
+            if (peak < 0.001) {
+                silentChecksInARow += 1;
+                if (silentChecksInARow >= 2) {
+                    const listeningTrackLabel = mediaStream.getAudioTracks()[0]?.label || 'unknown input';
+                    showFeedback(`Host audio is SILENT on input "${listeningTrackLabel}". Check the Multi-Output Device / BlackHole setup.`, 'error');
+                }
+            } else {
+                silentChecksInARow = 0;
+                showFeedback(`Host audio OK (level ${peak.toFixed(2)})`, 'success');
+            }
+        }, 4000);
+    }
+
     async function stopSystemAudioRecording() {
+        stopHostAudioLevelCheck();
         if (!isSystemActive && sourceStatuses.system !== 'connecting') return;
         drainSourceSampleQueue('system', { flushPartial: true });
         flushFinalTranscript('system', 'stop-request');

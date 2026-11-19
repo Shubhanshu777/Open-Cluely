@@ -1,16 +1,17 @@
 /* COMPACT GLASS OVERLAY - CLUELY STYLE WITH CHAT INTERFACE */
 
 :root {
-  --glass-shell-bg: rgba(255, 255, 255, 0.05);
+  /* More opaque dark surfaces so white text stays readable (was ~5% white tint). */
+  --glass-shell-bg: rgba(18, 20, 28, 0.92);
   --glass-shell-border: rgba(255, 255, 255, 0.3);
-  --glass-panel-bg: rgba(255, 255, 255, 0.05);
+  --glass-panel-bg: rgba(30, 33, 44, 0.85);
   --glass-panel-border: rgba(255, 255, 255, 0.3);
-  --glass-header-bg: rgba(255, 255, 255, 0.08);
-  --glass-control-bg: rgba(255, 255, 255, 0.1);
+  --glass-header-bg: rgba(40, 44, 58, 0.9);
+  --glass-control-bg: rgba(60, 65, 82, 0.85);
   --glass-control-border: rgba(255, 255, 255, 0.3);
-  --glass-input-bg: rgba(255, 255, 255, 0.1);
-  --glass-input-focus-bg: rgba(255, 255, 255, 0.15);
-  --glass-message-bg: rgba(255, 255, 255, 0.05);
+  --glass-input-bg: rgba(45, 49, 64, 0.9);
+  --glass-input-focus-bg: rgba(58, 63, 82, 0.95);
+  --glass-message-bg: rgba(35, 38, 50, 0.85);
   --glass-settings-bg: rgba(255, 255, 255, 0.92);
 }
 

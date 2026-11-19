@@ -44,7 +44,7 @@ const audioPipeline = createAudioPipeline({
 });
 
 const transcriptBufferManager = createTranscriptBufferManager({
-    mergeWindowMs: 3500,
+    mergeWindowMs: 1200,
     onBuffer: ({ source, text, segments }) => {
         addMonitorLog('info', 'final-buffer', 'Buffered transcript segment', source, {
             segments,
@@ -64,8 +64,36 @@ const transcriptBufferManager = createTranscriptBufferManager({
             chars: text.length
         });
         showFeedback('Captured', 'success');
+        scheduleAutoAnswer(source);
     }
 });
+
+// Auto-answer: after a finished transcript chunk from one of these sources, wait for a
+// short quiet period and then run "Suggest" automatically (same as pressing the button).
+// Use ['system', 'mic'] to also answer your own microphone speech.
+const AUTO_ANSWER_SOURCES = ['system', 'mic'];
+const AUTO_ANSWER_QUIET_PERIOD_MS = 500;
+let autoAnswerTimerHandle = null;
+
+function scheduleAutoAnswer(transcriptSource) {
+    if (!AUTO_ANSWER_SOURCES.includes(transcriptSource)) {
+        return;
+    }
+
+    // Restart the timer on every new chunk so we answer once the speaker pauses.
+    if (autoAnswerTimerHandle) {
+        clearTimeout(autoAnswerTimerHandle);
+    }
+
+    autoAnswerTimerHandle = setTimeout(() => {
+        autoAnswerTimerHandle = null;
+        // getResponseSuggestions() skips itself if a Suggest request is already running.
+        getResponseSuggestions().catch((autoAnswerError) => {
+            console.error('Auto-answer failed:', autoAnswerError);
+            addMonitorLog('error', 'auto-answer-failed', autoAnswerError.message, transcriptSource);
+        });
+    }, AUTO_ANSWER_QUIET_PERIOD_MS);
+}
 
 
 // DOM elements
@@ -724,7 +752,7 @@ async function askAiWithSessionContext() {
         const stream = createStreamHandler('askAi');
         try {
             setAnalyzing(true);
-            showLoadingOverlay('Analyzing full session context...');
+            // No blocking "Analyzing..." overlay: the answer streams into the chat as it arrives.
             stream.start('**Best Next Answer:**\n\n');
 
             const result = await window.electronAPI.askAiWithSessionContext(payload);
@@ -1192,7 +1220,23 @@ function updateManualComposerState() {
 }
 
 function submitManualContextMessage() {
+    // Only answer if the user actually typed something (the manager ignores empty input).
+    const typedTextBeforeSubmit = String(chatManualInput?.value || '').trim();
     chatUiManager.submitManualContextMessage();
+    if (!typedTextBeforeSubmit) {
+        return;
+    }
+
+    // Answer typed text right away: no quiet-period wait. Ask AI gives the full answer
+    // (including complete code with complexity), unlike Suggest which is only a short spoken line.
+    if (autoAnswerTimerHandle) {
+        clearTimeout(autoAnswerTimerHandle);
+        autoAnswerTimerHandle = null;
+    }
+    askAiWithSessionContext().catch((typedAnswerError) => {
+        console.error('Answer for typed text failed:', typedAnswerError);
+        addMonitorLog('error', 'typed-answer-failed', typedAnswerError.message);
+    });
 }
 
 // Timer

@@ -1,5 +1,5 @@
 const path = require('path');
-const { BrowserWindow } = require('electron');
+const { BrowserWindow, desktopCapturer } = require('electron');
 
 function createAssistantWindow({
   app,
@@ -67,9 +67,30 @@ function createAssistantWindow({
   console.log('Loading HTML from:', htmlPath);
   mainWindow.loadFile(htmlPath);
 
+  // System ("host") audio capture on macOS: Electron 31+ can loopback system audio
+  // when getDisplayMedia is answered with `audio: 'loopback'` (macOS 13+, needs the
+  // Screen Recording permission). The renderer calls getDisplayMedia; we auto-pick
+  // the primary screen instead of showing a picker.
+  mainWindow.webContents.session.setDisplayMediaRequestHandler(
+    async (_request, respondWithStream) => {
+      try {
+        const availableScreens = await desktopCapturer.getSources({ types: ['screen'] });
+        if (!availableScreens || availableScreens.length === 0) {
+          respondWithStream({});
+          return;
+        }
+        respondWithStream({ video: availableScreens[0], audio: 'loopback' });
+      } catch (displayMediaError) {
+        console.error('Display media request failed:', displayMediaError);
+        respondWithStream({});
+      }
+    },
+    { useSystemPicker: false }
+  );
+
   mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
     console.log('Permission requested:', permission);
-    if (permission === 'microphone' || permission === 'media') {
+    if (permission === 'microphone' || permission === 'media' || permission === 'display-capture') {
       console.log('Granting microphone permission');
       callback(true);
     } else {
@@ -80,7 +101,7 @@ function createAssistantWindow({
 
   mainWindow.webContents.session.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
     console.log('Permission check:', permission, requestingOrigin);
-    return permission === 'microphone' || permission === 'media';
+    return permission === 'microphone' || permission === 'media' || permission === 'display-capture';
   });
 
   mainWindow.webContents.session.protocol.registerFileProtocol('file', (request, callback) => {

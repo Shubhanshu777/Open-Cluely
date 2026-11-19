@@ -1,0 +1,13 @@
+{
+  "aiProvider": "gemini",
+  "geminiApiKey": "",
+  "assemblyAiApiKey": "",
+  "geminiApiKeyIndex": 0,
+  "geminiModel": "gemini-3.5-flash-lite",
+  "ollamaBaseUrl": "http://localhost:11434",
+  "ollamaModel": "llama3.2",
+  "assemblyAiSpeechModel": "universal-streaming-english",
+  "programmingLanguage": "Java",
+  "windowOpacityLevel": 10,
+  "themePreference": "light"
+}

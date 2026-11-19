@@ -9,6 +9,7 @@ const DEFAULT_OLLAMA_MODEL = 'llama3.2';
 // Gemini model configuration.
 // The first model in this list is treated as the default model everywhere.
 const GEMINI_MODELS = [
+  'gemini-3.5-flash-lite',
   'gemini-2.5-flash-lite',
   'gemini-3-flash-preview',
   'gemini-3.1-flash-lite-preview',
@@ -25,8 +26,8 @@ const ASSEMBLY_AI_SPEECH_MODELS = [
 // Programming language configuration.
 // The first language in this list is treated as the default language everywhere.
 const PROGRAMMING_LANGUAGES = [
-  'Python',
   'Java',
+  'Python',
   'JavaScript',
   'TypeScript',
   'C++',
