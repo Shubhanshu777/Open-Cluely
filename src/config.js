@@ -9,6 +9,7 @@ const DEFAULT_OLLAMA_MODEL = 'llama3.2';
 // Gemini model configuration.
 // The first model in this list is treated as the default model everywhere.
 const GEMINI_MODELS = [
+  'gemini-flash-latest',
   'gemini-3.5-flash-lite',
   'gemini-2.5-flash-lite',
   'gemini-3-flash-preview',

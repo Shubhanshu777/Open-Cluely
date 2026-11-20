@@ -44,7 +44,7 @@ const audioPipeline = createAudioPipeline({
 });
 
 const transcriptBufferManager = createTranscriptBufferManager({
-    mergeWindowMs: 1200,
+    mergeWindowMs: 120,
     onBuffer: ({ source, text, segments }) => {
         addMonitorLog('info', 'final-buffer', 'Buffered transcript segment', source, {
             segments,
@@ -72,7 +72,7 @@ const transcriptBufferManager = createTranscriptBufferManager({
 // short quiet period and then run "Suggest" automatically (same as pressing the button).
 // Use ['system', 'mic'] to also answer your own microphone speech.
 const AUTO_ANSWER_SOURCES = ['system', 'mic'];
-const AUTO_ANSWER_QUIET_PERIOD_MS = 500;
+const AUTO_ANSWER_QUIET_PERIOD_MS = 100;
 let autoAnswerTimerHandle = null;
 
 function scheduleAutoAnswer(transcriptSource) {
@@ -85,14 +85,19 @@ function scheduleAutoAnswer(transcriptSource) {
         clearTimeout(autoAnswerTimerHandle);
     }
 
+    // Host speech: AssemblyAI has already waited for the speaker to pause before sending this
+    // final text, so answer immediately. Your own mic keeps a tiny extra pause.
+    const delayBeforeAnswerMs = transcriptSource === 'system' ? 0 : AUTO_ANSWER_QUIET_PERIOD_MS;
+
     autoAnswerTimerHandle = setTimeout(() => {
         autoAnswerTimerHandle = null;
-        // getResponseSuggestions() skips itself if a Suggest request is already running.
-        getResponseSuggestions().catch((autoAnswerError) => {
+        // Full, detailed answer (Ask AI) instead of the short Suggest line. It skips itself if an
+        // Ask AI request is already running.
+        askAiWithSessionContext().catch((autoAnswerError) => {
             console.error('Auto-answer failed:', autoAnswerError);
             addMonitorLog('error', 'auto-answer-failed', autoAnswerError.message, transcriptSource);
         });
-    }, AUTO_ANSWER_QUIET_PERIOD_MS);
+    }, delayBeforeAnswerMs);
 }
 
 
@@ -547,16 +552,65 @@ function createStreamHandler(actionId) {
     let removeChunkListener = null;
     let loadingHidden = false;
 
+    // Line-by-line reveal: the answer is shown one line at a time, about 25 lines per second, so it
+    // always looks like it is being written live, even when the AI sends a big chunk at once. Each
+    // tick reveals one more line, so the display never falls behind by more than a moment.
+    const LINE_REVEAL_INTERVAL_MS = 40;
+    let visibleLineCount = 0;
+    let revealTimerHandle = null;
+
+    let lastPaintedText = null;
+
+    function paintVisibleLines() {
+        if (!messageRecord) return;
+        const allLines = accumulatedText.split('\n');
+        const shownText = allLines.slice(0, visibleLineCount).join('\n');
+        // Only touch the page when something actually changed.
+        if (shownText === lastPaintedText) return;
+        lastPaintedText = shownText;
+        chatUiManager.updateChatMessageContent(messageRecord.id, shownText);
+    }
+
+    function revealTick() {
+        const totalLines = accumulatedText.split('\n').length;
+        if (visibleLineCount < totalLines) {
+            visibleLineCount += 1;
+            paintVisibleLines();
+        } else if (removeChunkListener) {
+            // Fully caught up while text is still arriving: keep the line being written growing live.
+            paintVisibleLines();
+        } else if (revealTimerHandle !== null && !removeChunkListener) {
+            // Caught up and the request has ended: paint the final text once, then stop.
+            paintVisibleLines();
+            clearInterval(revealTimerHandle);
+            revealTimerHandle = null;
+        }
+    }
+
+    function ensureRevealRunning() {
+        if (revealTimerHandle === null) {
+            revealTimerHandle = setInterval(revealTick, LINE_REVEAL_INTERVAL_MS);
+        }
+    }
+
+    function showEverythingNow() {
+        if (revealTimerHandle !== null) {
+            clearInterval(revealTimerHandle);
+            revealTimerHandle = null;
+        }
+        visibleLineCount = accumulatedText.split('\n').length;
+        paintVisibleLines();
+    }
+
     function start(headingPrefix) {
         accumulatedText = headingPrefix || '';
+        visibleLineCount = accumulatedText.split('\n').length;
         messageRecord = addChatMessage('ai-response', accumulatedText || '...');
 
         removeChunkListener = window.electronAPI.onAiStreamChunk((data) => {
             if (data.actionId !== actionId) return;
             accumulatedText += data.text;
-            if (messageRecord) {
-                chatUiManager.updateChatMessageContent(messageRecord.id, accumulatedText);
-            }
+            ensureRevealRunning();
             if (!loadingHidden) {
                 loadingHidden = true;
                 hideLoadingOverlay();
@@ -567,8 +621,10 @@ function createStreamHandler(actionId) {
     }
 
     function finalize(finalText) {
+        // Full answer is in. Keep revealing line by line toward the complete text.
         if (finalText && messageRecord) {
-            chatUiManager.updateChatMessageContent(messageRecord.id, finalText);
+            accumulatedText = finalText;
+            ensureRevealRunning();
         }
     }
 
@@ -577,6 +633,13 @@ function createStreamHandler(actionId) {
             removeChunkListener();
             removeChunkListener = null;
         }
+        ensureRevealRunning();
+        // Safety net: never leave the answer half shown (for example if the window was hidden).
+        setTimeout(() => {
+            if (messageRecord && visibleLineCount < accumulatedText.split('\n').length) {
+                showEverythingNow();
+            }
+        }, 3000);
     }
 
     return { start, finalize, cleanup };

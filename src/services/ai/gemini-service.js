@@ -30,7 +30,9 @@ class GeminiService {
 
     this.requestQueue = [];
     this.lastRequestTime = 0;
-    this.minRequestInterval = 6000;
+    // No artificial pause between requests: send each one the instant it is asked.
+    // (If Google rate-limits a free key, the existing retry logic still handles the 429.)
+    this.minRequestInterval = 0;
     this.maxRetries = 3;
     this.isProcessing = false;
 
@@ -44,18 +46,34 @@ class GeminiService {
     this._initializeModel();
   }
 
+  // Generation settings tuned for speed and correctness.
+  // - temperature 0.2: more deterministic, fewer wrong answers (default is ~1.0).
+  // - thinkingLevel "minimal": measured on gemini-3.5-flash-lite, a coding question went from
+  //   5.0s to 1.35s before the first word, with the same answer quality. (thinkingBudget:0 is
+  //   rejected by this model with a 400.) If a model rejects thinkingConfig anyway, we switch it
+  //   off automatically and retry (see _executeRequest) so requests never fail because of it.
+  _buildGenerationConfig() {
+    const generationConfig = { temperature: 0.2 };
+    if (this.fastThinkingEnabled !== false) {
+      generationConfig.thinkingConfig = { thinkingLevel: 'minimal' };
+    }
+    return generationConfig;
+  }
+
   _initializeModel() {
     try {
       console.log('Initializing Gemini model:', this.modelName);
       this.model = this.genAI.getGenerativeModel({
-        model: this.modelName
+        model: this.modelName,
+        generationConfig: this._buildGenerationConfig()
       });
     } catch (error) {
       const fallbackModel = getDefaultGeminiModel();
       console.warn(`Primary model failed, using fallback ${fallbackModel}:`, error);
       this.modelName = fallbackModel;
       this.model = this.genAI.getGenerativeModel({
-        model: fallbackModel
+        model: fallbackModel,
+        generationConfig: this._buildGenerationConfig()
       });
     }
   }
@@ -192,8 +210,10 @@ class GeminiService {
 
       // Streaming path: use generateContentStream when onChunk callback is provided
       if (typeof request.onChunk === 'function') {
-        console.log(`[Gemini API] Streaming ${request.type} request started`);
+        console.log(`[${new Date().toISOString().slice(11, 23)}] [Gemini API] Streaming ${request.type} request started (model ${this.modelName}, prompt ${JSON.stringify(request.data).length} chars)`);
+        const streamStartedAt = Date.now();
         const streamResult = await this.model.generateContentStream(request.data);
+        console.log(`[Gemini API] Response headers after ${Date.now() - streamStartedAt}ms`);
         let fullText = '';
         let chunkIndex = 0;
 
@@ -204,13 +224,14 @@ class GeminiService {
             chunkIndex += 1;
             if (!request._firstChunkSent) {
               request._firstChunkSent = true;
+              console.log(`[Gemini API] FIRST WORDS after ${Date.now() - streamStartedAt}ms (chunk of ${chunkText.length} chars)`);
             }
             request.onChunk({ text: chunkText, index: chunkIndex });
           }
         }
 
         this.dailyTokenCount += this.estimateTokens(fullText);
-        console.log(`[Gemini API] Streaming ${request.type} request completed (${chunkIndex} chunks, ${fullText.length} chars)`);
+        console.log(`[Gemini API] Streaming ${request.type} request completed (${chunkIndex} chunks, ${fullText.length} chars) in ${Date.now() - streamStartedAt}ms`);
         return fullText;
       }
 
@@ -232,6 +253,19 @@ class GeminiService {
       return responseText;
     } catch (error) {
       console.error(`Request error (attempt ${retryCount + 1}):`, error.message);
+
+      // The model does not accept the "no thinking" setting: turn it off and retry once, immediately.
+      if (
+        this.fastThinkingEnabled !== false &&
+        !request._firstChunkSent &&
+        // Google reports an unsupported thinkingConfig as a generic "400 ... invalid argument".
+        (error?.status === 400 || /thinking|invalid argument/i.test(String(error?.message || '')))
+      ) {
+        console.warn('Model rejected thinkingConfig; disabling fast-thinking mode and retrying.');
+        this.fastThinkingEnabled = false;
+        this._initializeModel();
+        return this._executeRequest(request, retryCount);
+      }
 
       if (this.isQuotaExhaustedError(error)) {
         console.error('Quota-exhausted error detected. Skipping retries.');

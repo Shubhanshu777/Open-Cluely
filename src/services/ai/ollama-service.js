@@ -27,10 +27,13 @@ class OllamaService {
     this.baseUrl = String(options.baseUrl || DEFAULT_OLLAMA_BASE_URL).replace(/\/+$/, '');
     this.modelName = String(options.modelName || DEFAULT_OLLAMA_MODEL).trim();
     this.programmingLanguage = resolveProgrammingLanguage(options.programmingLanguage);
+    // When an API key is set (or the base URL ends in /v1), requests use the OpenAI-compatible
+    // chat-completions format (OpenAI, Groq, etc.) instead of Ollama's native format.
+    this.openAiApiKey = String(options.apiKey || '').trim();
 
     this.requestQueue = [];
     this.lastRequestTime = 0;
-    this.minRequestInterval = 500;
+    this.minRequestInterval = 0;
     this.maxRetries = 2;
     this.isProcessing = false;
 
@@ -50,6 +53,7 @@ class OllamaService {
     const previousProgrammingLanguage = this.programmingLanguage;
     const nextBaseUrl = String(options.baseUrl ?? this.baseUrl).replace(/\/+$/, '');
     const nextModelName = String(options.modelName ?? this.modelName).trim();
+    this.openAiApiKey = String(options.apiKey ?? this.openAiApiKey).trim();
     const nextProgrammingLanguage = resolveProgrammingLanguage(
       options.programmingLanguage ?? this.programmingLanguage
     );
@@ -173,7 +177,110 @@ class OllamaService {
     ];
   }
 
+  _usesOpenAiFormat() {
+    return Boolean(this.openAiApiKey) || /\/v1$/.test(this.baseUrl);
+  }
+
+  _openAiHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    if (this.openAiApiKey) {
+      headers.Authorization = `Bearer ${this.openAiApiKey}`;
+    }
+    return headers;
+  }
+
   async _chat(prompt) {
+    if (this._usesOpenAiFormat()) {
+      return this._chatOpenAi(prompt);
+    }
+    return this._chatOllama(prompt);
+  }
+
+  async _streamChat(prompt, request) {
+    if (this._usesOpenAiFormat()) {
+      return this._streamChatOpenAi(prompt, request);
+    }
+    return this._streamChatOllama(prompt, request);
+  }
+
+  // ---- OpenAI-compatible (OpenAI, Groq, ...) -------------------------------------------------
+  async _chatOpenAi(prompt) {
+    const startedAt = Date.now();
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: this._openAiHeaders(),
+      body: JSON.stringify({ model: this.modelName, messages: this._buildMessages(prompt), stream: false })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`AI API error ${response.status}: ${errorText}`);
+    }
+
+    const result = await response.json();
+    const responseText = result.choices?.[0]?.message?.content || '';
+    console.log(`[OpenAI-compatible API] Non-streaming completed in ${Date.now() - startedAt}ms (${responseText.length} chars)`);
+    return responseText;
+  }
+
+  async _streamChatOpenAi(prompt, request) {
+    const startedAt = Date.now();
+    console.log(`[${new Date().toISOString().slice(11, 23)}] [OpenAI-compatible API] Streaming request started (model ${this.modelName}, prompt ${prompt.length} chars)`);
+
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: this._openAiHeaders(),
+      body: JSON.stringify({ model: this.modelName, messages: this._buildMessages(prompt), stream: true })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`AI API error ${response.status}: ${errorText}`);
+    }
+
+    let fullText = '';
+    let chunkIndex = 0;
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    // Server-sent events: lines like `data: {json}` ending with `data: [DONE]`.
+    const handleLine = (rawLine) => {
+      const line = rawLine.trim();
+      if (!line.startsWith('data:')) return;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') return;
+
+      try {
+        const parsed = JSON.parse(payload);
+        const content = parsed.choices?.[0]?.delta?.content || '';
+        if (!content) return;
+
+        fullText += content;
+        chunkIndex += 1;
+        if (!request._firstChunkSent) {
+          request._firstChunkSent = true;
+          console.log(`[OpenAI-compatible API] FIRST WORDS after ${Date.now() - startedAt}ms`);
+        }
+        request.onChunk({ text: content, index: chunkIndex });
+      } catch {
+        // skip malformed lines
+      }
+    };
+
+    for await (const chunk of response.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      lines.forEach(handleLine);
+    }
+    if (buffer.trim()) handleLine(buffer);
+
+    console.log(`[OpenAI-compatible API] Streaming completed (${chunkIndex} chunks, ${fullText.length} chars) in ${Date.now() - startedAt}ms`);
+    return fullText;
+  }
+
+  // ---- Ollama native -------------------------------------------------------------------------
+  async _chatOllama(prompt) {
     const url = `${this.baseUrl}/api/chat`;
     const messages = this._buildMessages(prompt);
 
@@ -201,7 +308,7 @@ class OllamaService {
     return responseText;
   }
 
-  async _streamChat(prompt, request) {
+  async _streamChatOllama(prompt, request) {
     const url = `${this.baseUrl}/api/chat`;
     const messages = this._buildMessages(prompt);
 

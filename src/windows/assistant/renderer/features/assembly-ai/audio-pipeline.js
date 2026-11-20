@@ -1,7 +1,7 @@
 ﻿import { normalizeSource } from './source-state.js';
 
 const TARGET_SAMPLE_RATE = 16000;
-const TARGET_FRAME_MS = 100;
+const TARGET_FRAME_MS = 50;
 const MIN_FRAME_MS = 50;
 const TARGET_FRAME_SAMPLES = Math.round((TARGET_SAMPLE_RATE * TARGET_FRAME_MS) / 1000);
 const MIN_FRAME_SAMPLES = Math.round((TARGET_SAMPLE_RATE * MIN_FRAME_MS) / 1000);

@@ -2234,3 +2234,13 @@ body.theme-dark .monitor-log-list::-webkit-scrollbar-thumb:hover,
 body.theme-dark .settings-body::-webkit-scrollbar-thumb:hover {
   background: rgba(148, 163, 184, 0.58);
 }
+
+/* Key words in AI answers (the words to emphasise when speaking) */
+.message-content mark.key-word,
+.result-text mark.key-word {
+  background: rgba(250, 204, 21, 0.32);
+  color: #fff3b0;
+  font-weight: 700;
+  padding: 0 3px;
+  border-radius: 3px;
+}

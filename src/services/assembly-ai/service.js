@@ -145,7 +145,12 @@ function createAssemblyAiService({
     try {
       const queryParams = new URLSearchParams({
         sample_rate: String(ASSEMBLY_AI_SAMPLE_RATE),
-        format_turns: 'true',
+        // Speed: skip the extra text-formatting pass so the final text arrives sooner.
+        format_turns: 'false',
+        // Speed: call a turn finished after a shorter pause (defaults are slower: ~400ms / ~1280ms).
+        end_of_turn_confidence_threshold: '0.4',
+        min_end_of_turn_silence_when_confident: '200',
+        max_turn_silence: '800',
         speech_model: getSpeechModel()
       });
 
@@ -208,7 +213,7 @@ function createAssemblyAiService({
             case 'Turn':
               if (msg.transcript) {
                 if (msg.end_of_turn) {
-                  console.log(`AssemblyAI final [${resolvedSource}]:`, msg.transcript);
+                  console.log(`[${new Date().toISOString().slice(11, 23)}] AssemblyAI final [${resolvedSource}]:`, msg.transcript);
                   emitSttDebug({
                     source: resolvedSource,
                     event: 'turn-final',
